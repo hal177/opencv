@@ -78,7 +78,7 @@ echo "Build path: $build_path"
 echo "Calling cmake"
 #cp $script_dir/CMakeCache.txt $build_path
 cd $build_path
-cmake $script_dir/opencv/ -DCMAKE_INSTALL_PREFIX=$install_path
+cmake $script_dir -DCMAKE_INSTALL_PREFIX=$install_path
 echo "Calling cmake build"
 cmake --build . -j8
 make install
