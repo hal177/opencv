@@ -6,6 +6,7 @@
 
 #include <sstream>
 #include <algorithm>
+#include <numeric>
 
 #include "opencv2/ts.hpp"
 #include "opencv2/ts/ocl_test.hpp"
@@ -94,11 +95,11 @@ inline void generateFrame(int i, int FRAME_COUNT, cv::Mat & frame)
 class BunnyParameters
 {
 public:
-    inline static int    getWidth()  { return 672; };
-    inline static int    getHeight() { return 384; };
-    inline static int    getFps()    { return 24; };
-    inline static double getTime()   { return 5.21; };
-    inline static int    getCount()  { return cvRound(getFps() * getTime()); };
+    inline static int    getWidth()  { return 672; }
+    inline static int    getHeight() { return 384; }
+    inline static int    getFps()    { return 24; }
+    inline static double getTime()   { return 5.21; }
+    inline static int    getCount()  { return cvRound(getFps() * getTime()); }
     inline static std::string getFilename(const std::string &ext)
     {
         return cvtest::TS::ptr()->get_data_path() + "video/big_buck_bunny" + ext;

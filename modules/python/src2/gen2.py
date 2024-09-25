@@ -109,7 +109,7 @@ gen_template_set_prop_from_map = Template("""
     if( PyMapping_HasKeyString(src, (char*)"$propname") )
     {
         tmp = PyMapping_GetItemString(src, (char*)"$propname");
-        ok = tmp && pyopencv_to_safe(tmp, dst.$propname, ArgInfo("$propname", false));
+        ok = tmp && pyopencv_to_safe(tmp, dst.$propname, ArgInfo("$propname", 0));
         Py_DECREF(tmp);
         if(!ok) return false;
     }""")
@@ -163,7 +163,7 @@ static int pyopencv_${name}_set_${member}(pyopencv_${name}_t* p, PyObject *value
         PyErr_SetString(PyExc_TypeError, "Cannot delete the ${member} attribute");
         return -1;
     }
-    return pyopencv_to_safe(value, p->v${access}${member}, ArgInfo("value", false)) ? 0 : -1;
+    return pyopencv_to_safe(value, p->v${access}${member}, ArgInfo("value", 0)) ? 0 : -1;
 }
 """)
 
@@ -181,7 +181,7 @@ static int pyopencv_${name}_set_${member}(pyopencv_${name}_t* p, PyObject *value
         failmsgp("Incorrect type of object (must be '${name}' or its derivative)");
         return -1;
     }
-    return pyopencv_to_safe(value, _self_${access}${member}, ArgInfo("value", false)) ? 0 : -1;
+    return pyopencv_to_safe(value, _self_${access}${member}, ArgInfo("value", 0)) ? 0 : -1;
 }
 """)
 
@@ -432,7 +432,7 @@ class ClassInfo(object):
         if self.constructor is not None:
             constructor_name = self.constructor.get_wrapper_name()
 
-        return 'CVPY_TYPE({}, {}, {}, {}, {}, {}, "{}");\n'.format(
+        return 'CVPY_TYPE({}, {}, {}, {}, {}, {}, "{}")\n'.format(
             self.export_name,
             self.class_id,
             self.cname if self.issimple else "Ptr<{}>".format(self.cname),
@@ -489,12 +489,24 @@ class ArgInfo(object):
         return self.name
 
     @property
+    def nd_mat(self):
+        return '/ND' in self._modifiers
+
+    @property
     def inputarg(self):
         return '/O' not in self._modifiers
 
     @property
+    def arithm_op_src_arg(self):
+        return '/AOS' in self._modifiers
+
+    @property
     def outputarg(self):
         return '/O' in self._modifiers or '/IO' in self._modifiers
+
+    @property
+    def pathlike(self):
+        return '/PATH' in self._modifiers
 
     @property
     def returnarg(self):
@@ -517,7 +529,11 @@ class ArgInfo(object):
                            "UMat", "vector_UMat"] # or self.tp.startswith("vector")
 
     def crepr(self):
-        return "ArgInfo(\"%s\", %d)" % (self.name, self.outputarg)
+        arg  = 0x01 if self.outputarg else 0x0
+        arg += 0x02 if self.arithm_op_src_arg else 0x0
+        arg += 0x04 if self.pathlike else 0x0
+        arg += 0x08 if self.nd_mat else 0x0
+        return "ArgInfo(\"%s\", %d)" % (self.name, arg)
 
 
 def find_argument_class_info(argument_type, function_namespace,
@@ -838,7 +854,22 @@ class FuncInfo(object):
 
         all_code_variants = []
 
+        # See https://github.com/opencv/opencv/issues/25928
+        # Conversion to UMat is expensive more than conversion to Mat.
+        # To reduce this cost, conversion to Mat is prefer than to UMat.
+        variants = []
+        variants_umat = []
         for v in self.variants:
+            hasUMat = False
+            for a in v.args:
+                hasUMat = hasUMat or "UMat" in a.tp
+            if hasUMat :
+                variants_umat.append(v)
+            else:
+                variants.append(v)
+        variants.extend(variants_umat)
+
+        for v in variants:
             code_decl = ""
             code_ret = ""
             code_cvt_list = []
@@ -1053,7 +1084,7 @@ class FuncInfo(object):
             else:
                 py_name = classinfo.full_export_name + "." + self.variants[0].wname
 
-            if not self.is_static:
+            if not self.is_static and not self.isconstructor:
                 cname = classinfo.cname + '::' + cname
         else:
             py_name = '.'.join([self.namespace, self.variants[0].wname])
@@ -1285,7 +1316,7 @@ class PythonWrapperGenerator(object):
         code = ""
         if re.sub(r"^cv\.", "", enum_name) != wname:
             code += "typedef {0} {1};\n".format(cname, wname)
-        code += "CV_PY_FROM_ENUM({0});\nCV_PY_TO_ENUM({0});\n\n".format(wname)
+        code += "CV_PY_FROM_ENUM({0})\nCV_PY_TO_ENUM({0})\n\n".format(wname)
         self.code_enums.write(code)
 
     def save(self, path, name, buf):

@@ -5,6 +5,7 @@
 #include "../precomp.hpp"
 
 #include <opencv2/calib3d.hpp>
+#include <opencv2/core/utils/logger.hpp>
 #include "opencv2/objdetect/charuco_detector.hpp"
 #include "aruco_utils.hpp"
 
@@ -26,12 +27,12 @@ struct CharucoDetector::CharucoDetectorImpl {
     bool checkBoard(InputArrayOfArrays markerCorners, InputArray markerIds, InputArray charucoCorners, InputArray charucoIds) {
         vector<Mat> mCorners;
         markerCorners.getMatVector(mCorners);
-        Mat mIds = markerIds.getMat();
+        const Mat mIds = markerIds.getMat();
+        const Mat chCorners = charucoCorners.getMat();
+        const Mat chIds = charucoIds.getMat();
+        const vector<int>& boardIds = board.getIds();
 
-        Mat chCorners = charucoCorners.getMat();
-        Mat chIds = charucoIds.getMat();
-
-        vector<vector<int> > nearestMarkerIdx = board.getNearestMarkerIdx();
+        const vector<vector<int> > nearestMarkerIdx = board.getNearestMarkerIdx();
         vector<Point2f> distance(board.getNearestMarkerIdx().size(), Point2f(0.f, std::numeric_limits<float>::max()));
         // distance[i].x: max distance from the i-th charuco corner to charuco corner-forming markers.
         // The two charuco corner-forming markers of i-th charuco corner are defined in getNearestMarkerIdx()[i]
@@ -41,13 +42,19 @@ struct CharucoDetector::CharucoDetectorImpl {
             Point2f charucoCorner(chCorners.ptr<Point2f>(0)[i]);
             for (size_t j = 0ull; j < mIds.total(); j++) {
                 int idMaker = mIds.ptr<int>(0)[j];
+                // skip the check if the marker is not in the current board.
+                if (find(boardIds.begin(), boardIds.end(), idMaker) == boardIds.end())
+                    continue;
                 Point2f centerMarker((mCorners[j].ptr<Point2f>(0)[0] + mCorners[j].ptr<Point2f>(0)[1] +
                                       mCorners[j].ptr<Point2f>(0)[2] + mCorners[j].ptr<Point2f>(0)[3]) / 4.f);
                 float dist = sqrt(normL2Sqr<float>(centerMarker - charucoCorner));
-                // check distance from the charuco corner to charuco corner-forming markers
-                if (nearestMarkerIdx[chId][0] == idMaker || nearestMarkerIdx[chId][1] == idMaker) {
-                    int nearestCornerId =  nearestMarkerIdx[chId][0] == idMaker ? board.getNearestMarkerCorners()[chId][0] : board.getNearestMarkerCorners()[chId][1];
+                // nearestMarkerIdx contains for each charuco corner, nearest marker index in ids array
+                const int nearestMarkerId1 = boardIds[nearestMarkerIdx[chId][0]];
+                const int nearestMarkerId2 = boardIds[nearestMarkerIdx[chId][1]];
+                if (nearestMarkerId1 == idMaker || nearestMarkerId2 == idMaker) {
+                    int nearestCornerId = nearestMarkerId1 == idMaker ? board.getNearestMarkerCorners()[chId][0] : board.getNearestMarkerCorners()[chId][1];
                     Point2f nearestCorner = mCorners[j].ptr<Point2f>(0)[nearestCornerId];
+                    // distToNearest: distance from the charuco corner to charuco corner-forming markers
                     float distToNearest = sqrt(normL2Sqr<float>(nearestCorner - charucoCorner));
                     distance[chId].x = max(distance[chId].x, distToNearest);
                     // check that nearestCorner is nearest point
@@ -307,7 +314,9 @@ struct CharucoDetector::CharucoDetectorImpl {
             vector<vector<Point2f> > rejectedMarkers;
             arucoDetector.detectMarkers(image, _markerCorners, _markerIds, rejectedMarkers);
             if (charucoParameters.tryRefineMarkers)
-                arucoDetector.refineDetectedMarkers(image, board, _markerCorners,  _markerIds, rejectedMarkers);
+                arucoDetector.refineDetectedMarkers(image, board, _markerCorners, _markerIds, rejectedMarkers);
+            if (_markerCorners.empty() && _markerIds.empty())
+                return;
         }
         // if camera parameters are avaible, use approximated calibration
         if(!charucoParameters.cameraMatrix.empty())
@@ -317,8 +326,21 @@ struct CharucoDetector::CharucoDetectorImpl {
             interpolateCornersCharucoLocalHom(_markerCorners, _markerIds, image, charucoCorners, charucoIds);
         // to return a charuco corner, its closest aruco markers should have been detected
         filterCornersWithoutMinMarkers(charucoCorners, charucoIds, _markerIds, charucoCorners, charucoIds);
-}
+    }
 
+    void detectBoardWithCheck(InputArray image, OutputArray charucoCorners, OutputArray charucoIds,
+                              InputOutputArrayOfArrays markerCorners, InputOutputArray markerIds) {
+        vector<vector<Point2f>> tmpMarkerCorners;
+        vector<int> tmpMarkerIds;
+        InputOutputArrayOfArrays _markerCorners = markerCorners.needed() ? markerCorners : tmpMarkerCorners;
+        InputOutputArray _markerIds = markerIds.needed() ? markerIds : tmpMarkerIds;
+        detectBoard(image, charucoCorners, charucoIds, _markerCorners, _markerIds);
+        if (checkBoard(_markerCorners, _markerIds, charucoCorners, charucoIds) == false) {
+            CV_LOG_DEBUG(NULL, "ChArUco board is built incorrectly");
+            charucoCorners.release();
+            charucoIds.release();
+        }
+    }
 };
 
 CharucoDetector::CharucoDetector(const CharucoBoard &board, const CharucoParameters &charucoParams,
@@ -361,11 +383,7 @@ void CharucoDetector::setRefineParameters(const RefineParameters& refineParamete
 
 void CharucoDetector::detectBoard(InputArray image, OutputArray charucoCorners, OutputArray charucoIds,
                                   InputOutputArrayOfArrays markerCorners, InputOutputArray markerIds) const {
-    charucoDetectorImpl->detectBoard(image, charucoCorners, charucoIds, markerCorners, markerIds);
-    if (charucoDetectorImpl->checkBoard(markerCorners, markerIds, charucoCorners, charucoIds) == false) {
-        charucoCorners.release();
-        charucoIds.release();
-    }
+    charucoDetectorImpl->detectBoardWithCheck(image, charucoCorners, charucoIds, markerCorners, markerIds);
 }
 
 void CharucoDetector::detectDiamonds(InputArray image, OutputArrayOfArrays _diamondCorners, OutputArray _diamondIds,
@@ -470,7 +488,7 @@ void CharucoDetector::detectDiamonds(InputArray image, OutputArrayOfArrays _diam
             // interpolate the charuco corners of the diamond
             vector<Point2f> currentMarkerCorners;
             Mat aux;
-            charucoDetectorImpl->detectBoard(grey, currentMarkerCorners, aux, currentMarker, currentMarkerId);
+            charucoDetectorImpl->detectBoardWithCheck(grey, currentMarkerCorners, aux, currentMarker, currentMarkerId);
 
             // if everything is ok, save the diamond
             if(currentMarkerCorners.size() > 0ull) {
@@ -507,20 +525,27 @@ void drawDetectedCornersCharuco(InputOutputArray _image, InputArray _charucoCorn
                                 InputArray _charucoIds, Scalar cornerColor) {
     CV_Assert(!_image.getMat().empty() &&
               (_image.getMat().channels() == 1 || _image.getMat().channels() == 3));
-    CV_Assert((_charucoCorners.getMat().total() == _charucoIds.getMat().total()) ||
-              _charucoIds.getMat().total() == 0);
+    CV_Assert((_charucoCorners.total() == _charucoIds.total()) ||
+              _charucoIds.total() == 0);
+    CV_Assert(_charucoCorners.channels() == 2);
 
-    size_t nCorners = _charucoCorners.getMat().total();
+    Mat charucoCorners = _charucoCorners.getMat();
+    if (charucoCorners.type() != CV_32SC2)
+        charucoCorners.convertTo(charucoCorners, CV_32SC2);
+    Mat charucoIds;
+    if (!_charucoIds.empty())
+        charucoIds = _charucoIds.getMat();
+    size_t nCorners = charucoCorners.total();
     for(size_t i = 0; i < nCorners; i++) {
-        Point2f corner = _charucoCorners.getMat().at<Point2f>((int)i);
+        Point corner = charucoCorners.at<Point>((int)i);
         // draw first corner mark
-        rectangle(_image, corner - Point2f(3, 3), corner + Point2f(3, 3), cornerColor, 1, LINE_AA);
+        rectangle(_image, corner - Point(3, 3), corner + Point(3, 3), cornerColor, 1, LINE_AA);
         // draw ID
         if(!_charucoIds.empty()) {
-            int id = _charucoIds.getMat().at<int>((int)i);
+            int id = charucoIds.at<int>((int)i);
             stringstream s;
             s << "id=" << id;
-            putText(_image, s.str(), corner + Point2f(5, -5), FONT_HERSHEY_SIMPLEX, 0.5,
+            putText(_image, s.str(), corner + Point(5, -5), FONT_HERSHEY_SIMPLEX, 0.5,
                     cornerColor, 2);
         }
     }
@@ -540,25 +565,27 @@ void drawDetectedDiamonds(InputOutputArray _image, InputArrayOfArrays _corners, 
     int nMarkers = (int)_corners.total();
     for(int i = 0; i < nMarkers; i++) {
         Mat currentMarker = _corners.getMat(i);
-        CV_Assert(currentMarker.total() == 4 && currentMarker.type() == CV_32FC2);
+        CV_Assert(currentMarker.total() == 4 && currentMarker.channels() == 2);
+        if (currentMarker.type() != CV_32SC2)
+            currentMarker.convertTo(currentMarker, CV_32SC2);
 
         // draw marker sides
         for(int j = 0; j < 4; j++) {
-            Point2f p0, p1;
-            p0 = currentMarker.at< Point2f >(j);
-            p1 = currentMarker.at< Point2f >((j + 1) % 4);
+            Point p0, p1;
+            p0 = currentMarker.at<Point>(j);
+            p1 = currentMarker.at<Point>((j + 1) % 4);
             line(_image, p0, p1, borderColor, 1);
         }
 
         // draw first corner mark
-        rectangle(_image, currentMarker.at< Point2f >(0) - Point2f(3, 3),
-                  currentMarker.at< Point2f >(0) + Point2f(3, 3), cornerColor, 1, LINE_AA);
+        rectangle(_image, currentMarker.at<Point>(0) - Point(3, 3),
+                  currentMarker.at<Point>(0) + Point(3, 3), cornerColor, 1, LINE_AA);
 
         // draw id composed by four numbers
         if(_ids.total() != 0) {
-            Point2f cent(0, 0);
+            Point cent(0, 0);
             for(int p = 0; p < 4; p++)
-                cent += currentMarker.at< Point2f >(p);
+                cent += currentMarker.at<Point>(p);
             cent = cent / 4.;
             stringstream s;
             s << "id=" << _ids.getMat().at< Vec4i >(i);

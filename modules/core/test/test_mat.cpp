@@ -474,12 +474,13 @@ TEST(Core_PCA, accuracy)
     ASSERT_LE(err, diffBackPrjEps) << "bad accuracy of cvBackProjectPCA() (CV_PCA_DATA_AS_COL)";
 #endif
     // Test read and write
-    FileStorage fs( "PCA_store.yml", FileStorage::WRITE );
+    const std::string filename = cv::tempfile("PCA_store.yml");
+    FileStorage fs( filename, FileStorage::WRITE );
     rPCA.write( fs );
     fs.release();
 
     PCA lPCA;
-    fs.open( "PCA_store.yml", FileStorage::READ );
+    fs.open( filename, FileStorage::READ );
     lPCA.read( fs.root() );
     err = cvtest::norm(rPCA.eigenvectors, lPCA.eigenvectors, NORM_L2 | NORM_RELATIVE);
     EXPECT_LE(err, 0) << "bad accuracy of write/load functions (YML)";
@@ -487,6 +488,7 @@ TEST(Core_PCA, accuracy)
     EXPECT_LE(err, 0) << "bad accuracy of write/load functions (YML)";
     err = cvtest::norm(rPCA.mean, lPCA.mean, NORM_L2 | NORM_RELATIVE);
     EXPECT_LE(err, 0) << "bad accuracy of write/load functions (YML)";
+    EXPECT_EQ(0, remove(filename.c_str()));
 }
 
 class Core_ArrayOpTest : public cvtest::BaseTest
@@ -596,10 +598,10 @@ static void setValue(SparseMat& M, const int* idx, double value, RNG& rng)
     else if( M.type() == CV_64F )
         *(double*)ptr = value;
     else
-        CV_Error(CV_StsUnsupportedFormat, "");
+        CV_Error(cv::Error::StsUnsupportedFormat, "");
 }
 
-#if defined(__GNUC__) && (__GNUC__ == 11 || __GNUC__ == 12)
+#if defined(__GNUC__) && (__GNUC__ >= 11)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Warray-bounds"
 #endif
@@ -1366,6 +1368,18 @@ TEST(Core_Mat, copyNx1ToVector)
     src.convertTo(dst16, CV_16U);
 
     ASSERT_PRED_FORMAT2(cvtest::MatComparator(0, 0), ref_dst16, cv::Mat_<ushort>(dst16));
+}
+
+TEST(Core_Mat, copyMakeBoderUndefinedBehavior)
+{
+    Mat1b src(4, 4), dst;
+    randu(src, Scalar(10), Scalar(100));
+    // This could trigger a (signed int)*size_t operation which is undefined behavior.
+    cv::copyMakeBorder(src, dst, 1, 1, 1, 1, cv::BORDER_REFLECT_101);
+    EXPECT_EQ(0, cv::norm(src.row(1), dst(Rect(1,0,4,1))));
+    EXPECT_EQ(0, cv::norm(src.row(2), dst(Rect(1,5,4,1))));
+    EXPECT_EQ(0, cv::norm(src.col(1), dst(Rect(0,1,1,4))));
+    EXPECT_EQ(0, cv::norm(src.col(2), dst(Rect(5,1,1,4))));
 }
 
 TEST(Core_Matx, fromMat_)
@@ -2244,6 +2258,27 @@ TEST(Core_Eigen, eigen2cv_check_Mat_type)
     Mat_<double> d_mat;
     EXPECT_ANY_THROW(eigen2cv(eigen_A, d_mat));
     //EXPECT_EQ(CV_64FC1, d_mat.type());
+}
+
+TEST(Core_Eigen, cv2eigen_check_RowMajor)
+{
+    Mat A(3, 2, CV_32FC1, Scalar::all(0));
+    A.at<float>(0,0) = 1.0;
+    A.at<float>(0,1) = 2.0;
+    A.at<float>(1,0) = 3.0;
+    A.at<float>(1,1) = 4.0;
+    A.at<float>(2,0) = 5.0;
+    A.at<float>(2,1) = 6.0;
+
+    Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> eigen_A;
+    EXPECT_NO_THROW(cv2eigen(A, eigen_A));
+
+    ASSERT_EQ(1.0, eigen_A(0, 0));
+    ASSERT_EQ(2.0, eigen_A(0, 1));
+    ASSERT_EQ(3.0, eigen_A(1, 0));
+    ASSERT_EQ(4.0, eigen_A(1, 1));
+    ASSERT_EQ(5.0, eigen_A(2, 0));
+    ASSERT_EQ(6.0, eigen_A(2, 1));
 }
 #endif // HAVE_EIGEN
 

@@ -1,13 +1,6 @@
 if("${CMAKE_CXX_COMPILER};${CMAKE_C_COMPILER};${CMAKE_CXX_COMPILER_LAUNCHER}" MATCHES "ccache")
-  set(CMAKE_COMPILER_IS_CCACHE 1)  # TODO: FIXIT Avoid setting of CMAKE_ variables
   set(OPENCV_COMPILER_IS_CCACHE 1)
 endif()
-function(access_CMAKE_COMPILER_IS_CCACHE)
-  if(NOT OPENCV_SUPPRESS_DEPRECATIONS)
-    message(WARNING "DEPRECATED: CMAKE_COMPILER_IS_CCACHE is replaced to OPENCV_COMPILER_IS_CCACHE.")
-  endif()
-endfunction()
-variable_watch(CMAKE_COMPILER_IS_CCACHE access_CMAKE_COMPILER_IS_CCACHE)
 if(ENABLE_CCACHE AND NOT OPENCV_COMPILER_IS_CCACHE)
   # This works fine with Unix Makefiles and Ninja generators
   find_host_program(CCACHE_PROGRAM ccache)
@@ -84,6 +77,17 @@ macro(add_env_definitions option)
   add_definitions("-D${option}=\"${value}\"")
 endmacro()
 
+# Use same flags for native AArch64 and RISC-V compilation as for cross-compile (Linux)
+if(NOT CMAKE_CROSSCOMPILING AND NOT CMAKE_TOOLCHAIN_FILE AND COMMAND ocv_set_platform_flags)
+  unset(platform_flags)
+  ocv_set_platform_flags(platform_flags)
+  # externally-provided flags should have higher priority - prepend our flags
+  if(platform_flags)
+    set(CMAKE_CXX_FLAGS "${platform_flags} ${CMAKE_CXX_FLAGS}")
+    set(CMAKE_C_FLAGS "${platform_flags} ${CMAKE_C_FLAGS}")
+  endif()
+endif()
+
 if(NOT MSVC)
   # OpenCV fails some tests when 'char' is 'unsigned' by default
   add_extra_compiler_option(-fsigned-char)
@@ -105,6 +109,19 @@ elseif(CV_ICC)
       add_extra_compiler_option("-fp-model precise")
     endif()
   endif()
+elseif(CV_ICX)
+  # ICX uses -ffast-math by default.
+  # use own flags, if no one of the flags provided by user: -fp-model, -ffast-math -fno-fast-math
+  if(NOT " ${CMAKE_CXX_FLAGS} ${OPENCV_EXTRA_FLAGS} ${OPENCV_EXTRA_CXX_FLAGS}" MATCHES " /fp:"
+      AND NOT " ${CMAKE_CXX_FLAGS} ${OPENCV_EXTRA_FLAGS} ${OPENCV_EXTRA_CXX_FLAGS}" MATCHES " -fp-model"
+      AND NOT " ${CMAKE_CXX_FLAGS} ${OPENCV_EXTRA_FLAGS} ${OPENCV_EXTRA_CXX_FLAGS}" MATCHES " -ffast-math"
+      AND NOT " ${CMAKE_CXX_FLAGS} ${OPENCV_EXTRA_FLAGS} ${OPENCV_EXTRA_CXX_FLAGS}" MATCHES " -fno-fast-math"
+  )
+    if(NOT ENABLE_FAST_MATH)
+      add_extra_compiler_option(-fno-fast-math)
+      add_extra_compiler_option(-fp-model=precise)
+    endif()
+  endif()
 elseif(CV_GCC OR CV_CLANG)
   if(ENABLE_FAST_MATH)
     add_extra_compiler_option(-ffast-math)
@@ -112,7 +129,7 @@ elseif(CV_GCC OR CV_CLANG)
   endif()
 endif()
 
-if(CV_GCC OR CV_CLANG)
+if(CV_GCC OR CV_CLANG OR CV_ICX)
   # High level of warnings.
   add_extra_compiler_option(-W)
   if (NOT MSVC)
@@ -336,7 +353,7 @@ if(COMMAND ocv_compiler_optimization_options_finalize)
 endif()
 
 # set default visibility to hidden
-if((CV_GCC OR CV_CLANG)
+if((CV_GCC OR CV_CLANG OR CV_ICX)
     AND NOT MSVC
     AND NOT OPENCV_SKIP_VISIBILITY_HIDDEN
     AND NOT " ${CMAKE_CXX_FLAGS} ${OPENCV_EXTRA_FLAGS} ${OPENCV_EXTRA_CXX_FLAGS}" MATCHES " -fvisibility")
@@ -378,7 +395,7 @@ endif()
 
 # Apply "-Wl,--no-undefined" linker flags: https://github.com/opencv/opencv/pull/21347
 if(NOT OPENCV_SKIP_LINK_NO_UNDEFINED)
-  if(UNIX AND (NOT APPLE OR NOT CMAKE_VERSION VERSION_LESS "3.2"))
+  if(UNIX AND ((NOT APPLE OR NOT CMAKE_VERSION VERSION_LESS "3.2") AND NOT CMAKE_SYSTEM_NAME MATCHES "OpenBSD"))
     set(_option "-Wl,--no-undefined")
     set(_saved_CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${_option}")  # requires CMake 3.2+ and CMP0056
